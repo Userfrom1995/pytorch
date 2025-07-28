@@ -36,7 +36,7 @@ from torch.testing._internal.common_utils import (
     parametrize,
     run_tests,
     skip_but_pass_in_sandcastle_if,
-    TEST_MULTIGPU,
+    TEST_MULTIACCELERATOR,
 )
 
 
@@ -212,7 +212,7 @@ class ScheduleTest(MultiProcContinousTest):
 
     @requires_accelerator_dist_backend(["nccl", "xccl"])
     @skip_but_pass_in_sandcastle_if(
-        not TEST_MULTIGPU, f"{backend} test requires 2+ GPUs"
+        not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
     )
     @parametrize(
         "ScheduleClass",
@@ -287,7 +287,7 @@ class ScheduleTest(MultiProcContinousTest):
 
     @requires_accelerator_dist_backend(["nccl", "xccl"])
     @skip_but_pass_in_sandcastle_if(
-        not TEST_MULTIGPU, f"{backend} test requires 2+ GPUs"
+        not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
     )
     @parametrize("ScheduleClass", [ScheduleGPipe, Schedule1F1B])
     def test_multi_iter(self, ScheduleClass):
@@ -308,7 +308,7 @@ class ScheduleTest(MultiProcContinousTest):
 
     @requires_accelerator_dist_backend(["nccl", "xccl"])
     @skip_but_pass_in_sandcastle_if(
-        not TEST_MULTIGPU, f"{backend} test requires 2+ GPUs"
+        not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
     )
     @parametrize("ScheduleClass", [ScheduleGPipe, Schedule1F1B])
     def test_kwargs_with_tracer(self, ScheduleClass):
@@ -367,7 +367,7 @@ class ScheduleTest(MultiProcContinousTest):
 
     @requires_accelerator_dist_backend(["nccl", "xccl"])
     @skip_but_pass_in_sandcastle_if(
-        not TEST_MULTIGPU, f"{backend} test requires 2+ GPUs"
+        not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
     )
     @parametrize("ScheduleClass", [ScheduleGPipe, Schedule1F1B])
     def test_grad_with_tracer(self, ScheduleClass):
@@ -408,7 +408,7 @@ class ScheduleTest(MultiProcContinousTest):
 
     @requires_accelerator_dist_backend(["nccl", "xccl"])
     @skip_but_pass_in_sandcastle_if(
-        not TEST_MULTIGPU, f"{backend} test requires 2+ GPUs"
+        not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
     )
     @parametrize("ScheduleClass", [ScheduleGPipe, Schedule1F1B])
     @parametrize("shape_inference", [True, False])
@@ -465,7 +465,7 @@ class ScheduleTest(MultiProcContinousTest):
 
     @requires_accelerator_dist_backend(["nccl", "xccl"])
     @skip_but_pass_in_sandcastle_if(
-        not TEST_MULTIGPU, f"{backend} test requires 2+ GPUs"
+        not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
     )
     @parametrize(
         "ScheduleClass",
@@ -577,7 +577,7 @@ class ScheduleTest(MultiProcContinousTest):
 
     @requires_accelerator_dist_backend(["nccl", "xccl"])
     @skip_but_pass_in_sandcastle_if(
-        not TEST_MULTIGPU, f"{backend} test requires 2+ GPUs"
+        not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
     )
     @parametrize("ScheduleClass", [ScheduleWithW, ScheduleInterleavedZeroBubble])
     def test_schedule_with_native_zero_bubble(self, ScheduleClass):
@@ -637,7 +637,7 @@ class ScheduleTest(MultiProcContinousTest):
 
     @requires_accelerator_dist_backend(["nccl", "xccl"])
     @skip_but_pass_in_sandcastle_if(
-        not TEST_MULTIGPU, f"{backend} test requires 2+ GPUs"
+        not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
     )
     @parametrize(
         "ScheduleClass",
@@ -702,7 +702,7 @@ class ScheduleTest(MultiProcContinousTest):
 
     @requires_accelerator_dist_backend(["nccl", "xccl"])
     @skip_but_pass_in_sandcastle_if(
-        not TEST_MULTIGPU, f"{backend} test requires 2+ GPUs"
+        not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
     )
     @parametrize(
         "schedule_class", [ScheduleVShaped, ScheduleUnbalanced, ScheduleZBVZeroBubble]
@@ -765,7 +765,7 @@ class ScheduleTest(MultiProcContinousTest):
 
     @requires_accelerator_dist_backend(["nccl", "xccl"])
     @skip_but_pass_in_sandcastle_if(
-        not TEST_MULTIGPU, f"{backend} test requires 2+ GPUs"
+        not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
     )
     @parametrize("ScheduleClass", [ScheduleInterleavedZeroBubble])
     def test_schedule_with_weight_update_mlp_e2e(self, ScheduleClass):
@@ -847,7 +847,7 @@ class ScheduleTest(MultiProcContinousTest):
 
     @requires_accelerator_dist_backend(["nccl", "xccl"])
     @skip_but_pass_in_sandcastle_if(
-        not TEST_MULTIGPU, f"{backend} test requires 2+ GPUs"
+        not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
     )
     @parametrize(
         "ScheduleClass",
