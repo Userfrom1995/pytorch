@@ -1,4 +1,4 @@
-name: Limited CI for distributed tests on H100
+name: Limited CI for distributed tests on B200
 
 on:
   pull_request:
