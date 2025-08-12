@@ -596,12 +596,15 @@ class IRNode:
 
         # Group nodes by their stack traces to deduplicate
         nodes_to_stack_trace = {}
-        if config.trace.provenance_tracking:
+
+        if config.trace.basic_provenance_tracking or config.trace.provenance_tracking:
             for node in origins:
+                if not hasattr(node, "stack_trace"):
+                    continue
                 if node.stack_trace:
                     # nodes in the backward graph don't have mapping to pre_grad_graph
                     nodes_to_stack_trace["post_grad+" + node.name] = node.stack_trace
-                else:
+                elif config.trace.provenance_tracking:
                     if (
                         "postToPre"
                         not in torch._inductor.debug._inductor_post_to_pre_grad_nodes

@@ -1810,7 +1810,12 @@ class trace:
 
     log_autotuning_results = os.environ.get("LOG_AUTOTUNE_RESULTS", "0") == "1"
 
-    # Save mapping info from inductor generated triton kernel to post_grad fx nodes to pre_grad fx nodes
+    # Save mapping info from inductor generated kernel to post_grad fx nodes to pre_grad fx nodes
+    # Will be changed to default to True
+    # TODO: remove this flag once it's running stable
+    basic_provenance_tracking = os.environ.get("INDUCTOR_PROVENANCE_BASIC", "0") == "1"
+
+    # Provide more comprehensive provenance tracking information of inductor kernels
     provenance_tracking = (
         os.environ.get("TORCH_COMPILE_DEBUG", "0") == "1"
         or os.environ.get("INDUCTOR_PROVENANCE", "0") == "1"
