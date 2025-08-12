@@ -50,6 +50,7 @@ from .autotune_process import (
 from .codecache import code_hash, PersistentCache, PyCodeCache
 from .codegen.common import (
     CSEVariable,
+    DeferredLine,
     IndentedBuffer,
     KernelTemplate,
     OpOverrides,
@@ -418,6 +419,7 @@ class TritonTemplateKernel(TritonKernel):
         self.indexing_code: IndentedBuffer = FakeIndentedBuffer()
         self.loads: IndentedBuffer = FakeIndentedBuffer()
         self.stores: IndentedBuffer = FakeIndentedBuffer()
+        self.tma_definitions: dict[str, str] = {}
         self.template_mask: Optional[str] = None
         self.template_out: Optional[str] = None
         self.ops_handler: Optional[V.WrapperHandler] = None  # type: ignore[name-defined]
@@ -988,12 +990,72 @@ class TritonTemplateKernel(TritonKernel):
         self.render_hooks[hook_key] = hook
         return hook_key
 
+    def generate_output_tensor_descriptor(
+        self,
+        block_sizes: tuple[str],
+        strides: tuple[str],
+        shapes: tuple[str],
+        indent_width: int = 4,
+    ):
+        """
+        Generates a tensor descriptor for the output data. This is kept in a separate function
+        to allow extracting it from the main loop body.
+
+        Args:
+            block_sizes(tuple[str]): The block sizes to use for the TMA store. This should be a tuple of strings
+                that refer to the block variables.
+            strides(tuple[str]): The stride
+            shapes(tuple[str]): The shapes use for the TMA store. This should be a tuple of strings
+                that refer to the block variables.
+            indent_width (int): The number of spaces to use for indentation. This is used when the call to
+                store_output is indented in the kernel definition.
+        """
+        with self.create_subgraph_body("<TMA_OUTPUT_DESC>"):
+            output_layout = self.output_node.get_layout()
+            needs_transpose = not output_layout.is_contiguous()
+            output_name = self.output_node.get_name()
+            assert output_name not in self.tma_definitions, "generate_output_tensor_descriptor() must not be called on the same output multiple times"
+            if needs_transpose:
+                strides = strides[::-1]
+                block_sizes = block_sizes[::-1]
+                shapes = shapes[::-1]
+            if output_name not in V.graph.removed_buffers:
+                # TODO: Determine how fix the name.
+                output_var_name = V.ops.kernel.args.output(output_name)
+                output_desc_name = output_var_name + "_desc"
+                self.tma_definitions[output_name] = output_desc_name
+                shapes_str = ", ".join(shapes)
+                block_shape_str = ", ".join(block_sizes)
+                # The last element must be a constant 1. This is checked by the template specification,
+                # but Triton needs to see this information directly.
+                strides = strides[:-1]
+                strides_str = ", ".join(strides)
+                body = f"triton.language.make_tensor_descriptor(base={output_var_name}, shape=[{shapes_str}], strides=[{strides_str}, 1], block_shape=[{block_shape_str}])"
+                line_body = f"{output_desc_name} = {body}"
+            else:
+                line_body = ""
+            output_line = DeferredLine(output_name, line_body)
+
+        def hook():
+            # more stuff might have been added since the codegen_body above
+            line = output_line.line
+            if line is None:
+                return ""
+            else:
+                return textwrap.indent(line, " " * indent_width).strip()
+
+        assert "<TMA_OUTPUT_DESC>" not in self.render_hooks
+        self.render_hooks["<TMA_OUTPUT_DESC>"] = hook
+        return "<TMA_OUTPUT_DESC>"
+
+
     def store_output(
         self,
         indices: Union[list[Any], tuple[Any]],
         val: str,
-        mask: Optional[str] = None,
+        mask: Optional[Union[str, tuple[str]]] = None,
         indent_width: int = 4,
+        use_tma: bool = False,
     ):
         """Stores the final output and appends any epilogue fusions if the buffer hasn't been optimized away.
 
@@ -1001,15 +1063,18 @@ class TritonTemplateKernel(TritonKernel):
             indices (Union[List, Tuple]): The index for each dimension of the output. The dot product of
                 these indices and output strides must match `val`.
             val (str): The value to store.
-            mask (Optional[str]): An optional mask to use for the store operation. If provided, this mask
-                will be applied to the store.
+            mask (Optional[Union[str, tuple[str]]]): An optional mask to use for the store operation. If provided, this mask
+                will be applied to the store. When use_tma=True this mask should be a tuple of the variables used to create
+                the upper bound for the allocation.
             indent_width (int): The number of spaces to use for indentation. This is used when the call to
                 store_output is indented in the kernel definition.
+            use_tma (bool): Should TMA be enable for this output?
         """
         with self.create_subgraph_body("<STORE_OUTPUT>"):
             assert isinstance(indices, (list, tuple))
             assert isinstance(val, str)
             assert isinstance(mask, (str, type(None)))
+            assert isinstance(use_tma, bool)
             assert self.template_mask is None
             indices = list(map(OpOverrides.paren, indices))
             index_symbols = [sympy.Symbol(x, integer=True) for x in indices]
@@ -1018,26 +1083,37 @@ class TritonTemplateKernel(TritonKernel):
             ]
             assert len(indices) == len(lengths)
 
-            # glue to make generated code use same indexing from template
-            for name, range_tree_entry in zip(
-                indices, self.range_trees[0].construct_entries(lengths)
-            ):
-                range_tree_entry.set_name(name)
-            contiguous_index = sympy_dot(
-                ir.FlexibleLayout.contiguous_strides(lengths), index_symbols
-            )
-            contiguous_index = self.rename_indexing(contiguous_index)
-            self.body.writeline("xindex = " + texpr(contiguous_index))
-            self.range_trees[0].lookup(sympy.S.One, sympy_product(lengths)).set_name(
-                "xindex"
-            )
-            self.template_mask = mask
-            self.template_out = val
-            self.template_indices = indices
-            output_index = self.output_node.get_layout().make_indexer()(index_symbols)
-            output_index = self.rename_indexing(output_index)
-            if output_index == contiguous_index:
-                output_index = sympy.Symbol("xindex", integer=True)
+            needs_transpose = False
+            output_name = self.output_node.get_name()
+            if use_tma:
+                assert not mask, "Mask is not supported with use_tma=True"
+                output_layout = self.output_node.get_layout()
+                needs_transpose = not self.output_node.get_layout().is_contiguous()
+                if needs_transpose:
+                    output_index = index_symbols[::-1]
+                else:
+                    output_index = index_symbols
+            else:
+                # glue to make generated code use same indexing from template
+                for name, range_tree_entry in zip(
+                    indices, self.range_trees[0].construct_entries(lengths)
+                ):
+                    range_tree_entry.set_name(name)
+                contiguous_index = sympy_dot(
+                    ir.FlexibleLayout.contiguous_strides(lengths), index_symbols
+                )
+                contiguous_index = self.rename_indexing(contiguous_index)
+                self.body.writeline("xindex = " + texpr(contiguous_index))
+                self.range_trees[0].lookup(sympy.S.One, sympy_product(lengths)).set_name(
+                    "xindex"
+                )
+                self.template_mask = mask
+                self.template_out = val
+                self.template_indices = indices
+                output_index = self.output_node.get_layout().make_indexer()(index_symbols)
+                output_index = self.rename_indexing(output_index)
+                if output_index == contiguous_index:
+                    output_index = sympy.Symbol("xindex", integer=True)
 
             acc_dtype = (
                 triton_type_to_torch(self.meta["ACC_TYPE"])
@@ -1054,11 +1130,24 @@ class TritonTemplateKernel(TritonKernel):
                 # We update frozen_layouts_cnt in order to replay this function on a cache hit.
                 self.frozen_layouts_cnt += 1
 
-            V.ops.store(
-                self.output_node.get_name(),
-                output_index,
-                self.epilogue_fn(*epilogue_args),
-            )
+            data = self.epilogue_fn(*epilogue_args)
+            if needs_transpose:
+                data = f"tl.trans({data})"
+            if use_tma:
+                assert output_name in self.tma_definitions, "use_tma=True requires calling generate_output_tensor_descriptor"
+                output_desc_name = self.tma_definitions[output_name]
+                output_dtype = triton_type(output_layout.dtype)
+                output = DeferredLine(output_name, f"{output_desc_name}.store({output_index}, {data}.to({output_dtype}))")
+                V.ops.kernel.store_buffer_names.add(output_name)
+                V.ops._update_store_cache(output_name, output)
+                if output_name not in V.graph.removed_buffers:
+                    V.ops.kernel.stores.writeline(output)
+            else:
+                V.ops.store(
+                    self.output_node.get_name(),
+                    output_index,
+                    data,
+                )
             self.codegen_body()
 
         def hook():
@@ -1090,6 +1179,7 @@ class TritonTemplateKernel(TritonKernel):
                 self.modification,
                 self.gen_argdefs,
                 self.gen_defines,
+                self.generate_output_tensor_descriptor,
             ]
         }
         return PartialRender(
