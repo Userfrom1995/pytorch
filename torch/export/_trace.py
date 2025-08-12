@@ -2,12 +2,16 @@
 # mypy: allow-untyped-defs
 import dataclasses
 import functools
+import gc
 import inspect
 import logging
+import os
 import re
 import sys
 import time
+import types
 import warnings
+import weakref
 from contextlib import contextmanager, nullcontext
 from typing import Any, Callable, Optional, Union
 from typing_extensions import TypeAlias
@@ -106,6 +110,8 @@ from .graph_signature import _convert_to_export_graph_signature, ExportGraphSign
 
 
 log = logging.getLogger(__name__)
+
+NONSTRICT_EXPORT_SANITIZE_TRACE = "NONSTRICT_EXPORT_SANITIZE_TRACE"
 
 
 # Type alias for dynamic shapes specification
@@ -2025,6 +2031,16 @@ def _export_for_training(
     # Call the appropriate export function based on the strictness of tracing.
     export_func = _strict_export if strict else _non_strict_export
 
+    alive_fake_input_ids_before_export: list[int] = []
+
+    if not strict and os.environ.get(NONSTRICT_EXPORT_SANITIZE_TRACE, "0") == "1":
+        gc.collect()
+        alive_fake_input_ids_before_export = [
+            id(i)
+            for i in gc.get_objects()
+            if isinstance(i, torch._subclasses.fake_tensor.FakeTensor)
+        ]
+
     export_artifact = export_func(
         mod=mod,
         args=args,
@@ -2080,6 +2096,64 @@ def _export_for_training(
     )
 
     verify_additional_inputs(exported_program)
+
+    if not strict and os.environ.get(NONSTRICT_EXPORT_SANITIZE_TRACE, "0") == "1":
+        # See NOTE [export non-strict fake tensor leak detection]
+        from torch.fx.experimental.proxy_tensor import (
+            _FAKE_TENSOR_ID_TO_PROXY_MAP_FOR_EXPORT,
+        )
+
+        fakes_after: list[torch._subclasses.fake_tensor.FakeTensor] = [
+            i
+            for i in gc.get_objects()
+            if isinstance(i, torch._subclasses.fake_tensor.FakeTensor)
+        ]
+
+        active_fakes: weakref.WeakSet = weakref.WeakSet()
+        for fake_tensor in fakes_after:
+            if id(fake_tensor) not in alive_fake_input_ids_before_export:
+                active_fakes.add(fake_tensor)
+
+        del fakes_after
+        del alive_fake_input_ids_before_export
+
+        legit_leak: weakref.WeakSet = weakref.WeakSet()
+        for act in active_fakes:
+            for r in gc.get_referrers(act):
+                if r is globals():
+                    continue
+                elif isinstance(r, (types.FrameType, types.GeneratorType)):
+                    continue
+                elif r is locals():
+                    continue
+                elif isinstance(r, torch.fx.experimental.symbolic_shapes.TrackedFake):
+                    continue
+                # Hope there is a better way to know this is referring to gm.meta
+                elif isinstance(r, dict) and "val" in r:
+                    continue
+                else:
+                    legit_leak.add(act)
+                    break
+
+        leak_sources: list[str] = []
+        if len(legit_leak) > 0:
+            for fake_val in legit_leak:
+                if id(fake_val) in _FAKE_TENSOR_ID_TO_PROXY_MAP_FOR_EXPORT:
+                    stack_trace = _FAKE_TENSOR_ID_TO_PROXY_MAP_FOR_EXPORT[
+                        id(fake_val)
+                    ].meta.get("stack_trace", "<unknown stack trace>")
+                    leak_sources.append(stack_trace)
+
+            warnings.warn(
+                f"Detected {len(legit_leak)} fake tensors that are still alive after export. "
+                f"This is likely result of torch.export.export not being able to track side effects "
+                f"that is happening outside of model scope. Please refer to following stack traces to "
+                f"find the source of the leak: {leak_sources}\n "
+                f"Alternatively, please file a bug report to PyTorch team for further debugging help. "
+            )
+
+            del legit_leak
+
     return exported_program
 
 
