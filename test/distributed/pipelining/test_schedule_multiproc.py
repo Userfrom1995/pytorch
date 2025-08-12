@@ -181,7 +181,9 @@ class ScheduleTest(MultiProcContinousTest):
             stage_module.zero_grad()
 
     @requires_accelerator_dist_backend(["nccl", "xccl"])
-    @skip_but_pass_in_sandcastle_if(not TEST_MULTIGPU, f"{backend} test requires 2+ GPUs")
+    @skip_but_pass_in_sandcastle_if(
+        not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
+    )
     @parametrize("ScheduleClass", [_ScheduleForwardOnly])
     def test_forward_only(self, ScheduleClass):
         mod, mod_ref, x, _, _ = self._setup_models_and_data()
