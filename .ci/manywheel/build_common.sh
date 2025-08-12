@@ -138,6 +138,32 @@ fi
 
 echo "Calling setup.py bdist at $(date)"
 
+setup_ccache() {
+    CCACHE_DIR=/opt/ccache/bin
+    CCACHE_LIB_DIR=/opt/ccache/lib
+    echo "Installing ccache"
+    retry dnf install -y ccache
+
+    mkdir -p "${CCACHE_DIR}"
+    mkdir -p "${CCACHE_LIB_DIR}"
+
+    # Regular compilers go in PATH
+    COMPILERS=("gcc" "g++" "cc" "c++" "clang" "clang++" "icx" "icpx")
+    ccache_path=$(which ccache)
+    for compiler in "${COMPILERS[@]}"; do
+        ln -sf "${ccache_path}" "${CCACHE_DIR}/${compiler}"
+    done
+
+    # Special handling for nvcc: create wrapper but move it outside PATH
+    # This prevents CMake CUDA detection issues while still enabling caching
+    ln -sf "${ccache_path}" "${CCACHE_DIR}/nvcc"
+    mv "${CCACHE_DIR}/nvcc" "${CCACHE_LIB_DIR}/"
+
+    # Set CUDA_NVCC_EXECUTABLE so CMake uses our cached nvcc
+    export CUDA_NVCC_EXECUTABLE="${CCACHE_LIB_DIR}/nvcc"
+    export PATH="${CCACHE_DIR}:${PATH}"
+}
+
 if [[ "$USE_SPLIT_BUILD" == "true" ]]; then
     echo "Calling setup.py bdist_wheel for split build (BUILD_LIBTORCH_WHL)"
     time EXTRA_CAFFE2_CMAKE_FLAGS=${EXTRA_CAFFE2_CMAKE_FLAGS[@]} \
@@ -153,6 +179,19 @@ if [[ "$USE_SPLIT_BUILD" == "true" ]]; then
     USE_NCCL=${USE_NCCL} USE_RCCL=${USE_RCCL} USE_KINETO=${USE_KINETO} \
     CMAKE_FRESH=1 python setup.py bdist_wheel -d /tmp/$WHEELHOUSE_DIR
     echo "Finished setup.py bdist_wheel for split build (BUILD_PYTHON_ONLY)"
+elif [[ "${USE_SEQUENTIAL:-0}" = "1" ]]; then
+    setup_ccache
+
+    # NOTE: We log directly to PYTORCH_FINAL_PACKAGE_DIR to ensure logs upload
+    # as part of the artifacts
+    time CMAKE_ARGS=${CMAKE_ARGS[@]} \
+        EXTRA_CAFFE2_CMAKE_FLAGS=${EXTRA_CAFFE2_CMAKE_FLAGS[@]} \
+        BUILD_LIBTORCH_CPU_WITH_DEBUG=$BUILD_DEBUG_INFO \
+        USE_NCCL=${USE_NCCL} USE_RCCL=${USE_RCCL} USE_KINETO=${USE_KINETO} \
+        python3 tools/packaging/build_wheel.py \
+          --find-python manylinux \
+          --log-destination "${PYTORCH_FINAL_PACKAGE_DIR}" \
+          -d "/tmp/${WHEELHOUSE_DIR}"
 else
     time CMAKE_ARGS=${CMAKE_ARGS[@]} \
         EXTRA_CAFFE2_CMAKE_FLAGS=${EXTRA_CAFFE2_CMAKE_FLAGS[@]} \
