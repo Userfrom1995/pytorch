@@ -1466,6 +1466,11 @@ class ScaledMMConfigMixin(MMTemplateConfigMixin):
 
             return False
 
+        def is_scalar_like(sz: Any) -> bool:
+            return (len(sz) == 0) or all(
+                V.graph.sizevars.statically_known_equals(d, 1) for d in sz
+            )
+
         size_a, size_b = scale_a.get_size(), scale_b.get_size()
         assert are_compatible_scales(size_a, size_b), (
             "Expect scale_a and scale_b to be either both scalars (including single-element tensors) "
@@ -1480,7 +1485,7 @@ class ScaledMMConfigMixin(MMTemplateConfigMixin):
             # Override accumulator type for scaled MM
             template_kwargs["ACC_TYPE"] = "tl.float32"
             # Add SCALING_ROWWISE attribute based on scale_a tensor shape
-            template_kwargs["SCALING_ROWWISE"] = len(size_a) == 2
+            template_kwargs["SCALING_ROWWISE"] = not is_scalar_like(size_a)
 
             yield template_kwargs
 
