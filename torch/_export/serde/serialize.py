@@ -2943,12 +2943,18 @@ def serialize(
     exported_program: ep.ExportedProgram,
     opset_version: Optional[dict[str, int]] = None,
     pickle_protocol: int = DEFAULT_PICKLE_PROTOCOL,
+    tensor_paths: Optional[dict[str, str]] = None,
+    constant_paths: Optional[dict[str, str]] = None,
 ) -> SerializedArtifact:
     with _enable_graph_inputs_of_type_nn_module(exported_program.example_inputs):
         serialized_program = ExportedProgramSerializer(
             opset_version, pickle_protocol
         ).serialize(exported_program)
     assert isinstance(serialized_program.exported_program, ExportedProgram)
+    if tensor_paths:
+        serialized_program.exported_program.tensor_paths = tensor_paths
+    if constant_paths:
+        serialized_program.exported_program.constant_paths = constant_paths
 
     json_bytes = _to_json_bytes(serialized_program.exported_program)
     artifact = SerializedArtifact(
@@ -2999,6 +3005,13 @@ def _dict_to_dataclass(cls, data):
     return data
 
 
+def _bytes_to_dataclass(cls: Any, artifact_bytes: bytes) -> Any:
+    artifact_str = artifact_bytes.decode("utf-8")
+    artifact_dict = json.loads(artifact_str)
+    artifact_dataclass = _dict_to_dataclass(cls, artifact_dict)
+    return artifact_dataclass
+
+
 def deserialize(
     artifact: SerializedArtifact,
     expected_opset_version: Optional[dict[str, int]] = None,
@@ -3006,10 +3019,8 @@ def deserialize(
     _unsafe_skip_version_check=False,
 ) -> ep.ExportedProgram:
     assert isinstance(artifact.exported_program, bytes)
-    exported_program_str = artifact.exported_program.decode("utf-8")
-    exported_program_dict = json.loads(exported_program_str)
-    serialized_exported_program = _dict_to_dataclass(
-        ExportedProgram, exported_program_dict
+    serialized_exported_program = _bytes_to_dataclass(
+        ExportedProgram, artifact.exported_program
     )
     return ExportedProgramDeserializer(expected_opset_version).deserialize(
         serialized_exported_program,
