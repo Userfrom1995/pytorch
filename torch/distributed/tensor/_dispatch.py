@@ -279,7 +279,15 @@ class OpDispatcher:
         if op_info.schema.is_inplace_op():
             # inplace op should return self instead of re-wrapping
             if output_sharding.output_spec is not None:
-                return args[0]
+                # NOTE: the inplace argument's tensor meta may change
+                # after the op call, similar to out_variant op.
+                output_spec = output_sharding.output_spec
+                assert isinstance(output_spec, DTensorSpec)
+                assert isinstance(args[0], dtensor.DTensor)
+                args[0]._spec = output_spec
+                # use return_and_correct_aliasing to match the outer and the inner
+                # aliasing. See https://github.com/pytorch/pytorch/pull/158954
+                return return_and_correct_aliasing(op_call, args, kwargs, args[0])
             else:
                 return None
         elif op_info.schema.is_out_variant_op():
