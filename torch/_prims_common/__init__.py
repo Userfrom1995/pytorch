@@ -438,32 +438,21 @@ def is_channels_last_contiguous_or_false(a: Tensor) -> bool:
     ) or is_channels_last_contiguous_or_false_3d(a)
 
 
-def is_non_overlapping_and_dense(a: Tensor) -> bool:
+def _is_non_overlapping_and_dense(sizes, strides) -> bool:
     """
-    True when a tensor is non-overlapping and dense.
-
-    A tensor is non-overlapping and dense when there exists a permutation of
-    its dimensions that is contiguous.
+    Helper function for is_non_overlapping_and_dense
     """
+    from torch.fx.experimental.symbolic_shapes import guard_or_false, guard_or_true
+    from torch.utils._sympy.functions import Max
 
-    from torch.fx.experimental.symbolic_shapes import (
-        guard_or_false,
-        guard_size_oblivious,
-    )
-
-    if a.is_sparse:
-        return False
-
-    # Short-circuits if the tensor is already contiguous or channels-last contiguous
-    if is_contiguous_or_false(a) or is_channels_last_contiguous_or_false(a):
+    # Short-circuits for 0/1-element tensors
+    if guard_or_false(prod(sizes) < 2):
         return True
-
-    # The following is equivalent to compute_non_overlapping_and_dense in TensorImpl.cpp
 
     # Short-circuits for tensors of rank one, which are
     # non-overlapping and "dense" if their stride is one
-    if a.ndim == 1:
-        return a.stride()[0] == 1
+    if len(sizes) == 1:
+        return guard_or_false(strides[0] == 1)
 
     # Checks that there exists a permutation of the strides s.t. the tensor would be contiguous
     # Sorts (length, stride) pairs by stride
@@ -476,33 +465,76 @@ def is_non_overlapping_and_dense(a: Tensor) -> bool:
         stride: int
 
         def __lt__(self, other):
-            return guard_size_oblivious(self.stride < other.stride)
+            return (
+                guard_or_false(self.stride < other.stride)  # checks statically known inequality
+                or (
+                    (
+                        guard_or_false(self.stride == 0)
+                        or guard_or_false(other.stride % self.stride == 0)
+                    )
+                    and guard_or_true(self.stride != other.stride)
+                )  # checks symbolic inequality (e.g. u0 < 2048 * u0)
+            )
 
-        def __gt__(self, other):
-            return guard_size_oblivious(self.stride > other.stride)
+    lengths_and_strides = sorted(map(K, sizes, strides))
 
-        def __le__(self, other):
-            return guard_size_oblivious(self.stride <= other.stride)
+    # verify that sorted order was imposed (checks the "non-overlapping condition")
+    for i, j in zip(lengths_and_strides[:-1], lengths_and_strides[1:]):
+        if guard_or_false(i.stride == 0) or guard_or_false(j.stride % i.stride != 0):
+            return False
 
-        def __ge__(self, other):
-            return guard_size_oblivious(self.stride >= other.stride)
+    def stride_eq(stride, expected):
+        """
+        Performs an equality check between actual stride & expected stride (based on composed sizes),
+        handling contiguous stride representations:
+        e.g. torch.empty(u0, u1, u2).contiguous().stride() -> (Max(1, u1) * Max(1, u2), Max(1, u2), 1)
+        and we'd like to treat this equal to (u1 * u2, u2, 1) for comparison purposes.
+        """
+        if isinstance(stride, IntWithoutSymInt):
+            return stride == expected
 
-        def __eq__(self, other):
-            return guard_size_oblivious(self.stride == other.stride)
+        assert isinstance(stride, torch.SymInt)
+        stride = stride.node.expr
 
-    lengths_and_strides = sorted(map(K, a.shape, a.stride()))
+        max_1 = {}
+        for atom in stride.atoms(Max):
+            a, b = atom.args
+            if b == 1:
+                a, b = b, a
+            if a == 1:
+                max_1[atom] = b
+        if max_1:
+            stride = stride.xreplace(max_1)
 
+        return guard_or_false(stride == expected)
+
+    # verify actual strides match the expected (composed sizes)
     expected_stride = 1
     for length, stride in lengths_and_strides:
         if guard_or_false(length == 1):
             continue
 
-        if guard_size_oblivious(stride != expected_stride):
+        if not stride_eq(stride, expected_stride):
             return False
 
         expected_stride *= length
 
     return True
+
+
+def is_non_overlapping_and_dense(a: Tensor) -> bool:
+    """
+    True when a tensor is non-overlapping and dense.
+
+    A tensor is non-overlapping and dense when there exists a permutation of
+    its dimensions that is contiguous.
+    """
+    from torch.fx.experimental.symbolic_shapes import guard_or_false
+
+    if a.is_sparse:
+        return False
+
+    return _is_non_overlapping_and_dense(a.shape, a.stride())
 
 
 # NOTE: Based on the implementation in TensorIterator.cpp, but note that

@@ -460,6 +460,7 @@ class SymNode:
         return self.float_pow(other)
 
     def is_non_overlapping_and_dense(self, sizes, strides):
+        # TODO(pianpwk): can we short-circuit this with the prims_common implementation?
         return self.is_non_overlapping_and_dense_indicator(sizes, strides).eq(
             to_node(self, 1)
         )  # type: ignore[attr-defined]
