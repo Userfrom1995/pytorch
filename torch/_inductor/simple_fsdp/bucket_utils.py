@@ -1,8 +1,9 @@
 # mypy: ignore-errors
 import math
-from typing import Any, Callable, cast, Dict, Union, TYPE_CHECKING
+from typing import Any, Callable, cast, Dict, Union
 
 import torch
+import torch.distributed as c10d
 import torch.utils._pytree as pytree
 from torch.utils._ordered_set import OrderedSet
 
@@ -10,6 +11,36 @@ from .. import ir, scheduler
 from ..dependencies import StarDep, WeakDep
 from ..utils import buf_name_to_fused_snode, is_collective
 from ..virtualized import V
+from .reorder import _check_ir_node_fsdp
+
+
+def get_ag_node_pg_info(snode):
+    ag_fx_node = get_fx_node(
+        snode,
+        expected_op=torch.ops._c10d_functional.all_gather_into_tensor.default,
+    )
+    group_size, group_name = ag_fx_node.args[1], ag_fx_node.args[2]
+    ag_input_dtype = snode.node.inputs[0].layout.dtype
+    return group_size, group_name, ag_input_dtype
+
+
+def get_rs_node_pg_info(snode):
+    rs_fx_node = get_fx_node(
+        snode,
+        expected_op=torch.ops._c10d_functional.reduce_scatter_tensor.default,
+    )
+    group_size, group_name = rs_fx_node.args[2], rs_fx_node.args[3]
+    rs_input_dtype = snode.node.inputs[0].layout.dtype
+    return group_size, group_name, rs_input_dtype
+
+
+def sync_dict_across_ranks(runtime_dict, world_size):
+    gathered_lists = [None for _ in range(world_size)]
+    c10d.all_gather_object(gathered_lists, list(runtime_dict.values()))
+    median_gathered_time = torch.median(torch.tensor(gathered_lists), dim=0).values
+    for idx, (key, value) in enumerate(runtime_dict.items()):
+        runtime_dict[key] = median_gathered_time[idx]
+    return runtime_dict
 
 
 def get_fx_node(
@@ -34,7 +65,7 @@ def has_reduce_scatter_in_nodes(snodes: list["scheduler.BaseSchedulerNode"]) -> 
     for snode in snodes:
         if is_collective(
             snode.node, op=torch.ops._c10d_functional.reduce_scatter_tensor.default
-        ):
+        ) and _check_ir_node_fsdp(snode.node):
             return True
     return False
 
@@ -310,7 +341,7 @@ def bucket_all_gathers(
             param_all_gather_outputs_flattened,
             inp_split_sizes,
             all_gather_input_numel,
-            example_ag_input_tensor.device.index,
+            example_ag_input_tensor.device.index % group_size,
         ),
         {},
     )
@@ -398,7 +429,7 @@ def bucket_reduce_scatters(
     )
     assert all(n.meta["val"].dtype == reduce_dtype for n in unsharded_grads_fx_nodes)
     device = unsharded_grads_fx_nodes[0].meta["val"].device
-    rank = device.index
+    rank = device.index % group_size
     # TODO(yf225): need more work if we want to support non-dim-0 sharding (e.g. search for `shard_dim` in FSDP2 codebase)
     shard_dim = 0
 
